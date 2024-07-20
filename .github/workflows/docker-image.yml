@@ -1,18 +1,44 @@
-name: Docker Image CI
+FROM php:7.4-apache
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+# Set the working directory in the container
+WORKDIR /var/www/html
 
-jobs:
+# Copy the PHP application files to the working directory
+COPY . /var/www/html
 
-  build:
+# Install PHP-Mailer and other dependencies
+RUN apt-get update && apt-get install -y \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    zip \
+    unzip \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install gd
 
-    runs-on: ubuntu-latest
+# Enable the Apache rewrite module for clean URLs
+RUN a2enmod rewrite
 
-    steps:
-    - uses: actions/checkout@v4
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+# Set up the virtual host configuration
+COPY ./apache-config.conf /etc/apache2/sites-available/000-default.conf
+
+# Import database schema
+COPY ./database_schema/hhh_db.sql /docker-entrypoint-initdb.d/hhh_db.sql
+
+# Expose port 80 to the outside world
+EXPOSE 80
+
+# Define environment variables for MySQL connection
+ENV MYSQL_ROOT_PASSWORD=root_password
+ENV MYSQL_DATABASE=hhh_db
+ENV MYSQL_USER=db_user
+ENV MYSQL_PASSWORD=db_password
+
+# Set up environment variables for the PHP application
+ENV PHP_MAILER_VERSION=6.5.0
+
+# Set the entrypoint for the container
+ENTRYPOINT ["/usr/local/bin/docker-php-entrypoint"]
+
+# Start the Apache web server when the container launches
+CMD ["apache2-foreground"]
