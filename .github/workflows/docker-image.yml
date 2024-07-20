@@ -680,3 +680,14 @@ jobs:
         env:
           CONTAINER_REGISTRY_USERNAME: ${{ secrets.CONTAINER_REGISTRY_USERNAME }}
           CONTAINER_REGISTRY_PASSWORD: ${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
+   
+dist: jammy
+language: php
+php:
+  - 8.2
+before_install:
+  - sudo apt-get update
+  - sudo apt-get -y install libonig5 libonig-dev
+before_script:
+  - composer install
+script: vendor/bin/phpunit --no-coverage -c ./configuration/phpunit.xml --testsuite All
