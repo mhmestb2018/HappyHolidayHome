@@ -1,21 +1,8 @@
-name: Docker Image CI
-  variables-for-the-DOCKER-application:
-    name: environment variables for the DOCKER application
-    env:
-      DOCKER_IMAGE="usabillabv/php"
-      DOCKER_BUILDKIT="1"
-      DOCKER_CLI_EXPERIMENTAL="enabled"
-  variables-for-the-MYSQL-application:
-    name: Set up environment variables for the MYSQL application
-    env:
-      MYSQL_ROOT_PASSWORD="root_password"
-      MYSQL_DATABASE="hhh_db"
-      MYSQL_USER="db_user"
-      MYSQL_PASSWORD="db_password"
-  variables-for-PHP-MAILER-application:
-    name: Set up environment variables for the PHP Mailer application
-    env: 
-      PHP_MAILER_VERSION="6.5.0"
+name: Continuous Integration
+env:
+  DOCKER_IMAGE: usabillabv/php
+  DOCKER_BUILDKIT: 1
+  DOCKER_CLI_EXPERIMENTAL: enabled
 on:
   push:
     branches:
@@ -29,37 +16,667 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       alpine: ${{ steps.supported-alpine-versions.outputs.versions }}
+    steps:
+      - id: supported-alpine-versions
+        name: Generate Alpine
+        shell: bash
+        run: |
+          echo "::set-output name=versions::[\"3.14\", \"3.13\", \"3.12\", \"3.11\"]"
+  supported-nginx-versions:
+    name: Supported nginx versions
+    runs-on: ubuntu-latest
+    outputs:
+      nginx: ${{ steps.supported-nginx-versions.outputs.versions }}
+    steps:
+      - id: supported-nginx-versions
+        name: Generate nginx
+        shell: bash
+        run: | # The "1.19-nginx1-nginx" in here will be changed to "1.19 nginx1 nginx" when calling ./build-http.sh
+          echo "::set-output name=versions::[\"1.19-nginx1-nginx\", \"1.18\"]"
   supported-php-versions:
-    name: Supported php versions
-    runs-on: php-7.4-apache
-    run: echo "apt-get update | apt-get install --yes --force-yes cron g++ gettext libicu-dev openssl libc-client-dev libkrb5-dev libxml2-dev libfreetype6-dev libgd-dev libmcrypt-dev bzip2 libbz2-dev libtidy-dev libcurl4-openssl-dev libz-dev libmemcached-dev libxslt-dev | a2enmod rewrite | docker-php-ext-install mysqli | docker-php-ext-enable mysqli | docker-php-ext-configure gd --with-freetype=/usr --with-jpeg=/usr | docker-php-ext-install gd
-    copy: ./ /var/www/html/
-# Set the working directory in the container
-  set-working-directory:
-    name: Set working directory
-    workdir: /var/www/html
-# Copy the PHP application files to the working directory
-    copy: . /var/www/html
-# Install PHP-Mailer and other dependencies
-  supported-PHP-Mailer-versions:
-    name: PHP-Mailer
-    version: 6.5.0
-    run: echo "apt-get update && apt-get install -y \ libpng-dev \ libjpeg62-turbo-dev \ libfreetype6-dev \ zip \ unzip \ && docker-php-ext-configure gd --with-freetype --with-jpeg \ && docker-php-ext-install gd" 
-# Enable the Apache rewrite module for clean URLs 
-  Apache rewrite module:
-    name: Apache rewrite module
-    run: echo "a2enmod rewrite"
-# Set up the virtual host configuration
-    copy: ./apache-config.conf /etc/apache2/sites-available/000-default.conf 
-# Import database schema
-  Import-Database-Schema:
-    name: Import Database Schema
-    copy: ./database_schema/hhh_db.sql /docker-entrypoint-initdb.d/hhh_db.sql
-    runs-on: mysql
-    run: echo "mysql" | echo "source docker-entrypoint-initdb.d/hhh_db.sql;" 
-# Expose port 80 to the outside world
-expose: 80
-# Set the entrypoint for the container
-entrypoint: ["/usr/local/bin/docker-php-entrypoint"]
-# Start the Apache web server when the container launches
-cmd: ["apache2-foreground"]
+    name: Supported PHP versions
+    runs-on: ubuntu-latest
+    outputs:
+      php: ${{ steps.supported-php-versions.outputs.versions }}
+    steps:
+      - id: supported-php-versions
+        name: Generate PHP
+        shell: bash
+        run: |
+          echo "::set-output name=versions::[\"7.4\", \"7.3\"]"
+  php-type-matrix:
+    name: PHP Type Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      type: ${{ steps.php-type-matrix.outputs.type }}
+    steps:
+      - id: php-type-matrix
+        name: Generate Type
+        shell: bash
+        run: |
+          echo "::set-output name=type::[\"cli\", \"fpm\"]"
+  type-matrix:
+    name: Type Matrix
+    runs-on: ubuntu-latest
+    needs:
+      - php-type-matrix
+    outputs:
+      type: ${{ steps.type-matrix.outputs.type }}
+    steps:
+      - id: type-matrix
+        name: Generate Type
+        shell: bash
+        run: |
+          echo "::set-output name=type::[\"cli\", \"fpm\", \"http\"]"
+  lint-docker:
+    name: Lint Dockerfile-${{ matrix.type }}
+    runs-on: ubuntu-latest
+    needs:
+      - type-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        type: ${{ fromJson(needs.type-matrix.outputs.type) }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Lint Dockerfile-${{ matrix.type }}
+        uses: docker://hadolint/hadolint:latest-debian
+        with:
+          entrypoint: hadolint
+          args: Dockerfile-${{ matrix.type }}
+  lint-shell:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v2
+      - id: files
+        name: Generate shell script file list
+        shell: bash
+        run: |
+          list=$(ls src/http/nginx/docker* src/php/utils/install-* src/php/utils/docker/* build* test-*  | tr "\n" " " | sed -z '$ s/\n$//')
+          echo -e "::set-output name=list::/github/workspace/${list// / /github/workspace/}build-http.sh"
+      - name: Lint shell scripts
+        uses: docker://koalaman/shellcheck:latest
+        with:
+          args: ${{ steps.files.outputs.list }}
+  build-http:
+    name: Build nginx ${{ matrix.nginx }}
+    needs:
+      - lint-docker
+      - lint-shell
+      - supported-nginx-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ${{ fromJson(needs.supported-nginx-versions.outputs.nginx) }}
+    steps:
+      - uses: actions/checkout@v2
+      - run: ./build-http.sh $(echo "${{ matrix.nginx }}" | tr '-' ' ')
+        shell: bash
+      - run: cat ./tmp/build-http.tags | xargs -I % docker inspect --format='%={{.Id}}:{{index .Config.Env 7}}' %
+        shell: bash
+      - run: docker save "${DOCKER_IMAGE}" | gzip -9 > ./tmp/image-http-${{ matrix.nginx }}.tar
+        shell: bash
+      - name: Upload Images
+        uses: actions/upload-artifact@v2
+        with:
+          name: docker-image-http-${{ matrix.nginx }}
+          path: ./tmp
+  build-prometheus-exporter-file:
+    name: Build prometheus-exporter-file
+    needs:
+      - lint-docker
+      - lint-shell
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v2
+      - run: make build-prometheus-exporter-file
+        shell: bash
+      - run: cat ./tmp/build-prometheus-exporter-file.tags | xargs -I % docker inspect --format='%={{.Id}}:{{index .Config.Env 7}}' %
+        shell: bash
+      - run: docker save "${DOCKER_IMAGE}" | gzip -9 > ./tmp/image-prometheus-exporter-file.tar
+        shell: bash
+      - name: Upload Images
+        uses: actions/upload-artifact@v2
+        with:
+          name: docker-image-prometheus-exporter-file
+          path: ./tmp
+  build-php:
+    name: Build PHP ${{ matrix.php }} for ${{ matrix.type }} on Alpine ${{ matrix.alpine }}
+    needs:
+      - lint-docker
+      - lint-shell
+      - supported-alpine-versions
+      - supported-php-versions
+      - php-type-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ${{ fromJson(needs.supported-alpine-versions.outputs.alpine) }}
+        php: ${{ fromJson(needs.supported-php-versions.outputs.php) }}
+        type: ${{ fromJson(needs.php-type-matrix.outputs.type) }}
+        include:
+          - php: "7.1"
+            alpine: "3.10"
+            type: cli
+          - php: "7.1"
+            alpine: "3.10"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.14"
+            type: cli
+          - php: "8.0"
+            alpine: "3.14"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.15"
+            type: cli
+          - php: "8.0"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.16"
+            type: cli
+          - php: "8.0"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.15"
+            type: cli
+          - php: "8.1"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.16"
+            type: cli
+          - php: "8.1"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.17"
+            type: cli
+          - php: "8.1"
+            alpine: "3.17"
+            type: fpm
+          - php: "8.2"
+            alpine: "3.17"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.17"
+            type: "fpm"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "fpm"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "fpm"
+    steps:
+      - uses: actions/checkout@v2
+      - run: ./build-php.sh ${{ matrix.type }} ${{ matrix.php }} ${{ matrix.alpine }}
+        shell: bash
+      - run: cat ./tmp/build-${{ matrix.type }}.tags | xargs -I % docker inspect --format='%={{.Id}}:{{index .Config.Env 7}}' %
+        shell: bash
+      - run: docker save "${DOCKER_IMAGE}" | gzip -9 > ./tmp/image-${{ matrix.type }}-${{ matrix.php }}-${{ matrix.alpine }}.tar
+        shell: bash
+      - name: Upload Images
+        uses: actions/upload-artifact@v2
+        with:
+          name: docker-image-${{ matrix.type }}-${{ matrix.php }}-${{ matrix.alpine }}
+          path: ./tmp
+  scan-vulnerability-php:
+    name: Scan PHP ${{ matrix.php }} for ${{ matrix.type }} on Alpine ${{ matrix.alpine }} for vulnerabilities
+    needs:
+      - build-php
+      - build-http
+      - build-prometheus-exporter-file
+      - supported-alpine-versions
+      - supported-php-versions
+      - php-type-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ${{ fromJson(needs.supported-alpine-versions.outputs.alpine) }}
+        php: ${{ fromJson(needs.supported-php-versions.outputs.php) }}
+        type: ${{ fromJson(needs.php-type-matrix.outputs.type) }}
+        include:
+          - php: "7.1"
+            alpine: "3.10"
+            type: cli
+          - php: "7.1"
+            alpine: "3.10"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.14"
+            type: cli
+          - php: "8.0"
+            alpine: "3.14"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.15"
+            type: cli
+          - php: "8.0"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.16"
+            type: cli
+          - php: "8.0"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.15"
+            type: cli
+          - php: "8.1"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.16"
+            type: cli
+          - php: "8.1"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.17"
+            type: cli
+          - php: "8.1"
+            alpine: "3.17"
+            type: fpm
+          - php: "8.2"
+            alpine: "3.17"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.17"
+            type: "fpm"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "fpm"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "fpm"
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install clair-scanner
+        shell: bash
+        run: |
+          sudo curl -L https://github.com/arminc/clair-scanner/releases/download/v8/clair-scanner_linux_amd64 -o /usr/local/bin/clair-scanner
+          sudo chmod +x /usr/local/bin/clair-scanner
+      - name: Download Docker image to scan
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-${{ matrix.type }}-${{ matrix.php }}-${{ matrix.alpine }}
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+      - run: mkdir -p "./clair/${DOCKER_IMAGE}"
+      - run: make scan-vulnerability
+  scan-vulnerability-http:
+    name: Scan nginx ${{ matrix.nginx }} for vulnerabilities
+    needs:
+      - build-php
+      - build-http
+      - build-prometheus-exporter-file
+      - supported-nginx-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ${{ fromJson(needs.supported-nginx-versions.outputs.nginx) }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install clair-scanner
+        shell: bash
+        run: |
+          sudo curl -L https://github.com/arminc/clair-scanner/releases/download/v8/clair-scanner_linux_amd64 -o /usr/local/bin/clair-scanner
+          sudo chmod +x /usr/local/bin/clair-scanner
+      - name: Download Docker image to scan
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-http-${{ matrix.nginx }}
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+        shell: bash
+      - run: mkdir -p "./clair/${DOCKER_IMAGE}"
+        shell: bash
+      - run: make scan-vulnerability
+        shell: bash
+  scan-vulnerability-prometheus-exporter-file:
+    name: Scan HTTP prometheus-exporter-file for vulnerabilities
+    needs:
+      - build-php
+      - build-http
+      - build-prometheus-exporter-file
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install clair-scanner
+        shell: bash
+        run: |
+          sudo curl -L https://github.com/arminc/clair-scanner/releases/download/v8/clair-scanner_linux_amd64 -o /usr/local/bin/clair-scanner
+          sudo chmod +x /usr/local/bin/clair-scanner
+      - name: Download Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-prometheus-exporter-file
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+      - run: mkdir -p "./clair/${DOCKER_IMAGE}"
+      - run: make scan-vulnerability
+  test-php:
+    name: Functionaly test PHP ${{ matrix.php }} for ${{ matrix.type }} on Alpine ${{ matrix.alpine }}
+    needs:
+      - build-php
+      - build-http
+      - build-prometheus-exporter-file
+      - supported-alpine-versions
+      - supported-php-versions
+      - php-type-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ${{ fromJson(needs.supported-alpine-versions.outputs.alpine) }}
+        php: ${{ fromJson(needs.supported-php-versions.outputs.php) }}
+        type: ${{ fromJson(needs.php-type-matrix.outputs.type) }}
+        include:
+          - php: "7.1"
+            alpine: "3.10"
+            type: cli
+          - php: "7.1"
+            alpine: "3.10"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.14"
+            type: cli
+          - php: "8.0"
+            alpine: "3.14"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.15"
+            type: cli
+          - php: "8.0"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.16"
+            type: cli
+          - php: "8.0"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.15"
+            type: cli
+          - php: "8.1"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.16"
+            type: cli
+          - php: "8.1"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.17"
+            type: cli
+          - php: "8.1"
+            alpine: "3.17"
+            type: fpm
+          - php: "8.2"
+            alpine: "3.17"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.17"
+            type: "fpm"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "fpm"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "fpm"
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-${{ matrix.type }}-${{ matrix.php }}-${{ matrix.alpine }}
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+      - run: make test-${{ matrix.type }}
+  test-http:
+    name: Functionaly test nginx ${{ matrix.nginx }} with PHP FPM ${{ matrix.php }} on Alpine ${{ matrix.alpine }}
+    needs:
+      - build-http
+      - build-php
+      - build-prometheus-exporter-file
+      - supported-alpine-versions
+      - supported-nginx-versions
+      - supported-php-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ${{ fromJson(needs.supported-alpine-versions.outputs.alpine) }}
+        nginx: ${{ fromJson(needs.supported-nginx-versions.outputs.nginx) }}
+        php: ${{ fromJson(needs.supported-php-versions.outputs.php) }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download PHP Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-fpm-${{ matrix.php }}-${{ matrix.alpine }}
+          path: ./tmp
+      - name: Download nginx Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-http-${{ matrix.nginx }}
+          path: ./tmp
+      - run: docker load --input ./tmp/image-fpm-${{ matrix.php }}-${{ matrix.alpine }}.tar
+      - run: docker load --input ./tmp/image-http-${{ matrix.nginx }}.tar
+      - run: sudo chown -R 1000:1000 ./test/functional/web/tmp/ # Ensure we have the same uid:gid as our `app` docker user
+        shell: bash
+      - run: make test-http
+      - run: make test-http-e2e
+  test-prometheus-exporter-file:
+    name: Functionaly test prometheus-exporter-file
+    needs:
+      - build-http
+      - build-php
+      - build-prometheus-exporter-file
+      - supported-nginx-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download nginx Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-prometheus-exporter-file
+          path: ./tmp
+      - run: docker load --input ./tmp/image-prometheus-exporter-file.tar
+      - run: sudo chown -R 1000:1000 ./test/functional/web/tmp/ # Ensure we have the same uid:gid as our `app` docker user
+        shell: bash
+      - run: make test-prometheus-exporter-file-e2e
+  check-mark: # This is our required step, pay extra attention when this step is changed for what ever reason
+    name: ✔️
+    needs:
+      - test-http
+      - test-php
+      - test-prometheus-exporter-file
+      - scan-vulnerability-http
+      - scan-vulnerability-php
+      - scan-vulnerability-prometheus-exporter-file
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "✔️"
+  push-prometheus-exporter-file:
+    name: Push prometheus-exporter-file
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/master'
+    needs:
+      - test-http
+      - test-php
+      - test-prometheus-exporter-file
+      - scan-vulnerability-http
+      - scan-vulnerability-php
+      - scan-vulnerability-prometheus-exporter-file
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-prometheus-exporter-file
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+      - run: make ci-docker-login push-prometheus-exporter-file
+        env:
+          CONTAINER_REGISTRY_USERNAME: ${{ secrets.CONTAINER_REGISTRY_USERNAME }}
+          CONTAINER_REGISTRY_PASSWORD: ${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
+  push-http:
+    name: Push nginx ${{ matrix.nginx }}
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/master'
+    needs:
+      - test-http
+      - test-php
+      - test-prometheus-exporter-file
+      - scan-vulnerability-http
+      - scan-vulnerability-php
+      - scan-vulnerability-prometheus-exporter-file
+      - supported-nginx-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ${{ fromJson(needs.supported-nginx-versions.outputs.nginx) }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-http-${{ matrix.nginx }}
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+      - run: make ci-docker-login push-http
+        env:
+          CONTAINER_REGISTRY_USERNAME: ${{ secrets.CONTAINER_REGISTRY_USERNAME }}
+          CONTAINER_REGISTRY_PASSWORD: ${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
+  push-php:
+    name: Push PHP ${{ matrix.php }} for ${{ matrix.type }} on Alpine ${{ matrix.alpine }}
+    if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/master'
+    needs:
+      - test-http
+      - test-php
+      - test-prometheus-exporter-file
+      - scan-vulnerability-http
+      - scan-vulnerability-php
+      - scan-vulnerability-prometheus-exporter-file
+      - supported-alpine-versions
+      - supported-php-versions
+      - php-type-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ${{ fromJson(needs.supported-alpine-versions.outputs.alpine) }}
+        php: ${{ fromJson(needs.supported-php-versions.outputs.php) }}
+        type: ${{ fromJson(needs.php-type-matrix.outputs.type) }}
+        include:
+          - php: "7.1"
+            alpine: "3.10"
+            type: cli
+          - php: "7.1"
+            alpine: "3.10"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.14"
+            type: cli
+          - php: "8.0"
+            alpine: "3.14"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.15"
+            type: cli
+          - php: "8.0"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.0"
+            alpine: "3.16"
+            type: cli
+          - php: "8.0"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.15"
+            type: cli
+          - php: "8.1"
+            alpine: "3.15"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.16"
+            type: cli
+          - php: "8.1"
+            alpine: "3.16"
+            type: fpm
+          - php: "8.1"
+            alpine: "3.17"
+            type: cli
+          - php: "8.1"
+            alpine: "3.17"
+            type: fpm
+          - php: "8.2"
+            alpine: "3.17"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.17"
+            type: "fpm"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.2"
+            alpine: "3.19"
+            type: "fpm"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "cli"
+          - php: "8.3"
+            alpine: "3.19"
+            type: "fpm"
+    steps:
+      - uses: actions/checkout@v2
+      - name: Download Images
+        uses: actions/download-artifact@v2
+        with:
+          name: docker-image-${{ matrix.type }}-${{ matrix.php }}-${{ matrix.alpine }}
+          path: ./tmp
+      - run: docker load --input ./tmp/image*.tar
+      - run: make ci-docker-login push-${{ matrix.type }}
+        env:
+          CONTAINER_REGISTRY_USERNAME: ${{ secrets.CONTAINER_REGISTRY_USERNAME }}
+          CONTAINER_REGISTRY_PASSWORD: ${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
