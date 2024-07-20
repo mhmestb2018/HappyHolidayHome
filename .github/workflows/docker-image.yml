@@ -1,46 +1,65 @@
 name: Docker Image CI
-
-from: php:7.4-apache
-
+  variables-for-the-DOCKER-application:
+    name: environment variables for the DOCKER application
+    env:
+      DOCKER_IMAGE="usabillabv/php"
+      DOCKER_BUILDKIT="1"
+      DOCKER_CLI_EXPERIMENTAL="enabled"
+  variables-for-the-MYSQL-application:
+    name: Set up environment variables for the MYSQL application
+    env:
+      MYSQL_ROOT_PASSWORD="root_password"
+      MYSQL_DATABASE="hhh_db"
+      MYSQL_USER="db_user"
+      MYSQL_PASSWORD="db_password"
+  variables-for-PHP-MAILER-application:
+    name: Set up environment variables for the PHP Mailer application
+    env: 
+      PHP_MAILER_VERSION="6.5.0"
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  schedule:
+    - cron: '3 3 * * 1'
+jobs:
+  supported-alpine-versions:
+    name: Supported Alpine versions
+    runs-on: ubuntu-latest
+    outputs:
+      alpine: ${{ steps.supported-alpine-versions.outputs.versions }}
+  supported-php-versions:
+    name: Supported php versions
+    runs-on: php-7.4-apache
+    run: echo "apt-get update | apt-get install --yes --force-yes cron g++ gettext libicu-dev openssl libc-client-dev libkrb5-dev libxml2-dev libfreetype6-dev libgd-dev libmcrypt-dev bzip2 libbz2-dev libtidy-dev libcurl4-openssl-dev libz-dev libmemcached-dev libxslt-dev | a2enmod rewrite | docker-php-ext-install mysqli | docker-php-ext-enable mysqli | docker-php-ext-configure gd --with-freetype=/usr --with-jpeg=/usr | docker-php-ext-install gd
+    copy: ./ /var/www/html/
 # Set the working directory in the container
-workdir: /var/www/html
-
+  set-working-directory:
+    name: Set working directory
+    workdir: /var/www/html
 # Copy the PHP application files to the working directory
-copy: . /var/www/html
-
+    copy: . /var/www/html
 # Install PHP-Mailer and other dependencies
-run: apt-get update && apt-get install -y \
-    libpng-dev \
-    libjpeg62-turbo-dev \
-    libfreetype6-dev \
-    zip \
-    unzip \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install gd
-
-# Enable the Apache rewrite module for clean URLs
-run: a2enmod rewrite
-
+  supported-PHP-Mailer-versions:
+    name: PHP-Mailer
+    version: 6.5.0
+    run: echo "apt-get update && apt-get install -y \ libpng-dev \ libjpeg62-turbo-dev \ libfreetype6-dev \ zip \ unzip \ && docker-php-ext-configure gd --with-freetype --with-jpeg \ && docker-php-ext-install gd" 
+# Enable the Apache rewrite module for clean URLs 
+  Apache rewrite module:
+    name: Apache rewrite module
+    run: echo "a2enmod rewrite"
 # Set up the virtual host configuration
-copy: ./apache-config.conf /etc/apache2/sites-available/000-default.conf
-
+    copy: ./apache-config.conf /etc/apache2/sites-available/000-default.conf 
 # Import database schema
-copy: ./database_schema/hhh_db.sql /docker-entrypoint-initdb.d/hhh_db.sql
-
+  Import-Database-Schema:
+    name: Import Database Schema
+    copy: ./database_schema/hhh_db.sql /docker-entrypoint-initdb.d/hhh_db.sql
+    runs-on: mysql
+    run: echo "mysql" | echo "source docker-entrypoint-initdb.d/hhh_db.sql;" 
 # Expose port 80 to the outside world
 expose: 80
-
-# Define environment variables for MySQL connection
-env: MYSQL_ROOT_PASSWORD=root_password
-env: MYSQL_DATABASE=hhh_db
-env: MYSQL_USER=db_user
-env: MYSQL_PASSWORD=db_password
-
-# Set up environment variables for the PHP application
-env: PHP_MAILER_VERSION=6.5.0
-
 # Set the entrypoint for the container
 entrypoint: ["/usr/local/bin/docker-php-entrypoint"]
-
 # Start the Apache web server when the container launches
 cmd: ["apache2-foreground"]
